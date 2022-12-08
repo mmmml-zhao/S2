@@ -149,28 +149,26 @@ const processObjectValueInRow = (data: MultiData, isFormat: boolean) => {
 const processValueInDetail = (
   sheetInstance: SpreadSheet,
   split: string,
-  headers: (Node | undefined)[][],
   isFormat?: boolean,
 ): string[] => {
   const data = sheetInstance.dataSet.getDisplayDataSet();
+  const { columns } = sheetInstance.dataCfg?.fields;
+  const leafColumns = getLeafColumnsWithKey(columns || []);
   const res = [];
-  const keys = [];
   for (const [index, record] of data.entries()) {
     let tempRows = [];
     if (!isFormat) {
-      tempRows = keys.map((v) => (v ? getCsvString(record[v]) : ''));
+      tempRows = leafColumns.map((v: string) => getCsvString(record[v]));
     } else {
-      tempRows = keys.map((v) => {
-        if (v) {
-          const mainFormatter = sheetInstance.dataSet.getFieldFormatter(v);
-          return getCsvString(mainFormatter(record[v], record));
-        }
-        return '';
+      tempRows = leafColumns.map((v: string) => {
+        const mainFormatter = sheetInstance.dataSet.getFieldFormatter(v);
+        return getCsvString(mainFormatter(record[v], record));
       });
     }
     if (sheetInstance.options.showSeriesNumber) {
       tempRows = [getCsvString(index + 1)].concat(tempRows);
     }
+
     res.push(tempRows.join(split));
   }
   return res;
@@ -333,111 +331,22 @@ export const copyData = (
   const { maxLevel: maxRowsHeaderLevel } = rowsHierarchy;
   const { valueInCols } = sheetInstance.dataCfg.fields;
   // Generate the table header.
-  const rowsHeader = rowsHierarchy.sampleNodesForAllLevels;
+  const rowsHeader = rowsHierarchy.sampleNodesForAllLevels.map((item) =>
+    sheetInstance.dataSet.getFieldName(item.key),
+  );
+
   // get max query property length
   const maxRowDepth = rowLeafNodes.reduce((maxDepth, node) => {
     // 第一层的level为0
     const depth = (node.level ?? 0) + 1;
     return depth > maxDepth ? depth : maxDepth;
   }, 0);
-
-  // Generate the table header.
-  let headers: Node[][] = [];
-
-  if (isEmpty(colLeafNodes) && !sheetInstance.isPivotMode()) {
-    // when there is no column in detail mode
-    headers = [rowsHeader];
-  } else {
-    // 当列头label为array时用于补全其他层级的label
-    let arrayLength = 0;
-    // Get the table header of Columns.
-    let tempColHeader = clone(colLeafNodes).map((colItem) => {
-      let curColItem = colItem;
-
-      const tempCol = [];
-
-      // Generate the column dimensions.
-      while (curColItem.level !== undefined) {
-        const label = getHeaderLabel(curColItem.label);
-        if (isArray(label)) {
-          arrayLength = max([arrayLength, size(label)]);
-        }
-        tempCol.push(curColItem);
-        curColItem = curColItem.parent;
-      }
-      return tempCol;
-    });
-
-    if (arrayLength > 1) {
-      tempColHeader = processColHeaders(tempColHeader);
-    }
-
-    const colLevels = tempColHeader.map((colHeader) => colHeader.length);
-    const colLevel = max(colLevels);
-
-    const colHeader: Node[][] = [];
-    // Convert the number of column dimension levels to the corresponding array.
-    for (let i = colLevel - 1; i >= 0; i -= 1) {
-      // The map of data set: key-name
-      const colHeaderItem = tempColHeader
-        // total col completion
-        .map((item) =>
-          item.length < colLevel
-            ? [...new Array(colLevel - item.length), ...item]
-            : item,
-        )
-        .map((item) => item[i]);
-      colHeader.push(flatten(colHeaderItem));
-    }
-
-    // Generate the table header.
-    headers = colHeader.map((item, index) => {
-      if (sheetInstance.isPivotMode()) {
-        const { columns, data } = sheetInstance.facet.cornerHeader.cfg;
-        const colNodes = data.filter(
-          ({ cornerType }) => cornerType === CornerNodeType.Col,
-        );
-
-        const rowNodes = data.filter(
-          ({ cornerType }) => cornerType === CornerNodeType.Row,
-        );
-
-        if (index < colHeader.length - 1) {
-          return [
-            ...Array(maxRowsHeaderLevel).fill(''),
-            colNodes.find(({ field }) => field === columns[index]),
-            ...item,
-          ];
-        }
-        // 行头展开多少层，则复制多少层的内容。不进行全量复制。 eg: 树结构下，行头为 省份/城市, 折叠所有城市，则只复制省份
-        const copiedRows = rowNodes.slice(0, maxRowDepth);
-        // 在趋势分析表中，行头只有一个 extra的维度，但是有多个层级
-        if (copiedRows.length < maxRowDepth) {
-          copiedRows.unshift(
-            ...Array(maxRowDepth - copiedRows.length).fill(''),
-          );
-        }
-        return [...copiedRows.map((row) => row || undefined), ...item];
-      }
-      return index < colHeader.length
-        ? Array(maxRowDepth)
-            .fill('')
-            .concat(...item)
-        : rowsHeader.concat(...item);
-    });
-  }
-
   // Generate the table body.
   let detailRows = [];
   let maxRowLength = 0;
 
   if (!sheetInstance.isPivotMode()) {
-    detailRows = processValueInDetail(
-      sheetInstance,
-      split,
-      headers,
-      isFormatData,
-    );
+    detailRows = processValueInDetail(sheetInstance, split, isFormatData);
   } else {
     // Filter out the related row head leaf nodes.
     const caredRowLeafNodes = rowLeafNodes.filter((row) => row.height !== 0);
@@ -494,24 +403,112 @@ export const copyData = (
     }
   }
 
+  // Generate the table header.
+  let headers: string[][] = [];
+
+  if (isEmpty(colLeafNodes) && !sheetInstance.isPivotMode()) {
+    // when there is no column in detail mode
+    headers = [rowsHeader];
+  } else {
+    // 当列头label为array时用于补全其他层级的label
+    let arrayLength = 0;
+    // Get the table header of Columns.
+    let tempColHeader = clone(colLeafNodes).map((colItem) => {
+      let curColItem = colItem;
+
+      const tempCol = [];
+
+      // Generate the column dimensions.
+      while (curColItem.level !== undefined) {
+        let label = getHeaderLabel(curColItem.label);
+        if (isArray(label)) {
+          arrayLength = max([arrayLength, size(label)]);
+        } else {
+          // label 为数组时不进行格式化
+          label =
+            isFormatHeader && sheetInstance.isPivotMode()
+              ? getNodeFormatLabel(curColItem)
+              : label;
+        }
+        tempCol.push(label);
+        curColItem = curColItem.parent;
+      }
+      return tempCol;
+    });
+
+    if (arrayLength > 1) {
+      tempColHeader = processColHeaders(tempColHeader);
+    }
+
+    const colLevels = tempColHeader.map((colHeader) => colHeader.length);
+    const colLevel = max(colLevels);
+
+    const colHeader: string[][] = [];
+    // Convert the number of column dimension levels to the corresponding array.
+    for (let i = colLevel - 1; i >= 0; i -= 1) {
+      // The map of data set: key-name
+      const colHeaderItem = tempColHeader
+        // total col completion
+        .map((item) =>
+          item.length < colLevel
+            ? [...new Array(colLevel - item.length), ...item]
+            : item,
+        )
+        .map((item) => item[i])
+        .map((colItem) => sheetInstance.dataSet.getFieldName(colItem));
+      colHeader.push(flatten(colHeaderItem));
+    }
+
+    // Generate the table header.
+    headers = colHeader.map((item, index) => {
+      if (sheetInstance.isPivotMode()) {
+        const { columns, rows, data } = sheetInstance.facet.cornerHeader.cfg;
+        const colNodes = data.filter(
+          ({ cornerType }) => cornerType === CornerNodeType.Col,
+        );
+
+        if (index < colHeader.length - 1) {
+          return [
+            ...Array(maxRowsHeaderLevel).fill(''),
+            colNodes.find(({ field }) => field === columns[index])?.label || '',
+            ...item,
+          ];
+        }
+        // 行头展开多少层，则复制多少层的内容。不进行全量复制。 eg: 树结构下，行头为 省份/城市, 折叠所有城市，则只复制省份
+
+        const copiedRows = rows.slice(0, maxRowDepth);
+        // 在趋势分析表中，行头只有一个 extra的维度，但是有多个层级
+        if (copiedRows.length < maxRowDepth) {
+          copiedRows.unshift(
+            ...Array(maxRowDepth - copiedRows.length).fill(''),
+          );
+        }
+        return [
+          ...copiedRows.map(
+            (row) => sheetInstance.dataSet.getFieldName(row) || '',
+          ),
+          ...item,
+        ];
+      }
+
+      return index < colHeader.length
+        ? Array(maxRowDepth)
+            .fill('')
+            .concat(...item)
+        : rowsHeader.concat(...item);
+    });
+  }
+
   const headerRow = headers
     .map((header) => {
       const emptyLength = maxRowLength - header.length;
       if (emptyLength > 0) {
         header.unshift(...new Array(emptyLength));
       }
-      return header
-        .map((h) => {
-          const label =
-            isFormatHeader && sheetInstance.isPivotMode()
-              ? getNodeFormatLabel(h)
-              : h?.label ?? '';
-
-          return getCsvString(label);
-        })
-        .join(split);
+      return header.map((h) => getCsvString(h)).join(split);
     })
     .join('\r\n');
+
   const data = [headerRow].concat(detailRows);
   const result = data.join('\r\n');
   return result;

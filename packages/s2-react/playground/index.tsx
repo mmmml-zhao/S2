@@ -298,7 +298,7 @@ function MainLayout() {
     }
     setColumnOptions(getColumnOptions(sheetType));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetType]);
+  }, [sheetType, tableSheetColumnType]);
 
   useUpdateEffect(() => {
     setDataCfg(
